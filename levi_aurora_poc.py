@@ -1,17 +1,24 @@
-# Script minimal pour générer un CSV test pour le POC Aurores
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
+import random
 
-# Générer des dates de test
-dates = [datetime(2025, 12, i+1) for i in range(7)]  # 7 jours de test
-# Générer des heures d'aurores aléatoires
-hours = [2.5, 3.0, 0, 1.5, 2.0, 0, 3.5]
+start_date = datetime(2025, 12, 1)
+rows = []
 
-df = pd.DataFrame({
-    "date": dates,
-    "hours_of_aurora": hours
-})
+for i in range(7):
+    date = start_date + timedelta(days=i)
+    hours = random.choice([0, 1.5, 2.0, 3.0])
+    kp = random.uniform(1, 6)
 
-# Sauvegarder le CSV
-df.to_csv("levi_aurora_hours_per_night.csv", index=False)
-print("CSV de test généré : levi_aurora_hours_per_night.csv")
+    rows.append({
+        "date": date,
+        "hours_of_aurora": hours,
+        "kp_mean": kp
+    })
+
+df = pd.DataFrame(rows)
+df.to_parquet("levi_aurora_hours_per_night.parquet", index=False)
+
+print("Dataset test généré.")
+

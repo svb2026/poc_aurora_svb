@@ -1,54 +1,86 @@
-# Script autonome de collecte toutes les 2 minutes pour plusieurs webcams
-# Remplit le CSV avec l'intensité moyenne du vert et le score d'intensité
+# Collecte structurée avec stockage parquet exploitable
 
 import pandas as pd
-from datetime import datetime
-from PIL import Image
 import numpy as np
 import requests
+from PIL import Image
 from io import BytesIO
-import time as t
+from datetime import datetime, timezone
+import os
+import time
 
-CSV_FILE = "aurora_multi_webcams.csv"
-webcams = {
-    "NR3 West view": "https://uk.jokkmokk.jp/photo/nr3/latest.jpg",
-    "NR4 North view": "https://uk.jokkmokk.jp/photo/nr4/latest.jpg",
-    "Apukka Resort Rovaniemi": "https://youtu.be/bOEvPL206Hc"
+OUTPUT_FILE = "aurora_dataset.parquet"
+
+CAMERAS = {
+    "NR3 West view": {
+        "url": "https://uk.jokkmokk.jp/photo/nr3/latest.jpg",
+        "lat": 66.6,
+        "lon": 19.8
+    },
+    "NR4 North view": {
+        "url": "https://uk.jokkmokk.jp/photo/nr4/latest.jpg",
+        "lat": 66.6,
+        "lon": 19.8
+    }
 }
 
-# Charger le CSV existant ou créer un nouveau
-try:
-    df_global = pd.read_csv(CSV_FILE)
-except FileNotFoundError:
-    df_global = pd.DataFrame(columns=['timestamp','camera','green_mean','green_score'])
+def compute_intensity(img):
+    arr = np.array(img).astype(float)
+    green = arr[:,:,1]
+    red = arr[:,:,0]
+    blue = arr[:,:,2]
+
+    signal = np.clip(green - (red + blue)/2, 0, None)
+    luminance = np.mean(arr)
+
+    norm_intensity = np.mean(signal) / (luminance + 1e-6)
+    return float(norm_intensity)
+
+def get_kp():
+    try:
+        r = requests.get(
+            "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+            timeout=5
+        )
+        return float(r.json()[-1][1])
+    except:
+        return np.nan
 
 while True:
-    for name, url in webcams.items():
+    rows = []
+    kp = get_kp()
+
+    for name, meta in CAMERAS.items():
         try:
-            response = requests.get(url, timeout=2)
-            img = Image.open(BytesIO(response.content))
-            arr = np.array(img)
-            green_mean, green_score = 0, 0
-            if arr.ndim == 3 and arr.shape[2] >= 3:
-                green_channel = arr[:,:,1]
-                green_mean = np.mean(green_channel)
-                if green_mean < 10: green_score=0
-                elif green_mean < 50: green_score=1
-                elif green_mean < 100: green_score=2
-                elif green_mean < 150: green_score=3
-                elif green_mean < 200: green_score=4
-                else: green_score=5
+            r = requests.get(meta["url"], timeout=5)
+            img = Image.open(BytesIO(r.content)).convert("RGB")
 
-            new_row = {
-                'timestamp': datetime.now().isoformat(),
-                'camera': name,
-                'green_mean': green_mean,
-                'green_score': green_score
-            }
-            df_global = pd.concat([df_global, pd.DataFrame([new_row])], ignore_index=True)
-            df_global.to_csv(CSV_FILE, index=False)
-            print(f"Mesure enregistrée pour {name} à {new_row['timestamp']}")
+            intensity = compute_intensity(img)
+
+            rows.append({
+                "timestamp_utc": datetime.now(timezone.utc),
+                "camera": name,
+                "lat": meta["lat"],
+                "lon": meta["lon"],
+                "kp": kp,
+                "intensity": intensity
+            })
+
+            print(f"OK {name} | Intensity={intensity:.4f}")
+
         except Exception as e:
-            print(f"Erreur pour {name}: {e}")
+            print(f"Erreur {name}: {e}")
 
-    t.sleep(600)  # attendre 2 minutes avant la prochaine collecte
+    if rows:
+        df_new = pd.DataFrame(rows)
+
+        if os.path.exists(OUTPUT_FILE):
+            df_old = pd.read_parquet(OUTPUT_FILE)
+            df_all = pd.concat([df_old, df_new])
+        else:
+            df_all = df_new
+
+        df_all.to_parquet(OUTPUT_FILE, index=False)
+
+    time.sleep(600)
+
